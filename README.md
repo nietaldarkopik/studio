@@ -1,36 +1,42 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Ternyata Begini Studio
 
-## Getting Started
+Production workspace foundation for the Ternyata Begini video studio.
 
-First, run the development server:
+## Run locally
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Start the Laravel API separately from `../api`:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```powershell
+Set-Location ..\api
+php artisan serve --host=127.0.0.1 --port=8001
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Open `http://localhost:3000`. Set `STUDIO_API_URL`, `CLIPWIZE_BASE`, and `BLENDER_PATH` in `.env.local` as needed; `.env.example` contains non-secret defaults. Never prefix credentials or tokens with `NEXT_PUBLIC_`.
 
-## Learn More
+Create the initial Studio account from `../api` using `php artisan studio:user-create`. Password input is hidden in the terminal; public signup is disabled. See [the API setup guide](../api/README.md) for database and migration setup.
 
-To learn more about Next.js, take a look at the following resources:
+## Current scope
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- Dark creative workspace shell, navigation, responsive layout, and dashboard.
+- Laravel API login with a server-set HttpOnly cookie; the Sanctum bearer token is never returned to browser JavaScript.
+- MySQL-ready migrations for users, workspaces, memberships, channels, projects, scripts, scenes, personal access tokens, and audit logs.
+- Authenticated workspace/project CRUD plus project-scoped script and storyboard editing, role checks, idempotent draft migration, and audit events.
+- Scripts persist their format, narration, word count, status, and content version. Scenes persist their order, narration excerpt, visual description, camera direction, duration, and draft status.
+- Script drafts can be generated through the configured 9Router model. Generated text stays unsaved for human review; the Laravel API reads the key server-side from `../9router-key.txt` by default.
+- Existing preview drafts are copied to the workspace after login and removed from browser storage only after every import succeeds.
+- In local development only, `/api/integrations` checks ClipWize through the documented `clipwize.py` CLI (`ping` and `me`) and checks the configured Blender executable using only `--version`.
+- The script editor shows the 95–160 word production target and flags that research still needs two independent sources; AI output is a draft, not source verification or fact-checking.
+- Blender detection does not pair the Local Agent, open a project, or start a render. AI generation, structured prompts, previews, media management, TTS, workflow execution, QC, and publishing are not active yet.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Apply pending API migrations from `../api` with `php artisan migrate`. Local SQLite and the Laravel feature suite are verified; a live MySQL/MariaDB connection is not.
 
-## Deploy on Vercel
+Run frontend checks with `npm run lint` and `npm run build`. Run API tests from `../api` with `php artisan test`.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+To authenticate ClipWize, run its documented login command yourself in a terminal. It prompts for the password without echoing it and stores a local token for the CLI. Do not put that password or token in the app, browser storage, or `.env.local`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for service boundaries, database model, and remaining phase work.
