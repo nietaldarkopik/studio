@@ -36,6 +36,14 @@ return [
         'timeout' => env('NINE_ROUTER_TIMEOUT', 600),
     ],
 
+    'tavily' => [
+        'base_url' => env('TAVILY_BASE_URL', 'https://api.tavily.com'),
+        'api_key' => env('TAVILY_API_KEY'),
+        'timeout' => env('TAVILY_TIMEOUT', 30),
+        'max_results' => env('TAVILY_MAX_RESULTS', 6),
+        'search_depth' => env('TAVILY_SEARCH_DEPTH', 'basic'),
+    ],
+
     'slack' => [
         'notifications' => [
             'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),

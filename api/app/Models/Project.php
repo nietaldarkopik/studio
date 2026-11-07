@@ -49,4 +49,14 @@ class Project extends Model
     {
         return $this->hasMany(ResearchSource::class)->orderBy('id');
     }
+
+    public function prompts(): HasMany
+    {
+        return $this->hasMany(Prompt::class)->orderBy('id');
+    }
+
+    public function workflows(): HasMany
+    {
+        return $this->hasMany(Workflow::class)->orderBy('id');
+    }
 }

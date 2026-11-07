@@ -33,6 +33,11 @@ function resolveEndpoint(method: HttpMethod, segments: string[]) {
     return { path: `/api/workspaces/${scriptGenerationMatch[1]}/projects/${scriptGenerationMatch[2]}/script/generate` };
   }
 
+  const aiGenerationMatch = path.match(/^workspaces\/(\d+)\/projects\/(\d+)\/ai\/(prompt|prompt_all|research_search|research)$/);
+  if (aiGenerationMatch && (method === "POST" || method === "GET")) {
+    return { path: `/api/workspaces/${aiGenerationMatch[1]}/projects/${aiGenerationMatch[2]}/ai/${aiGenerationMatch[3]}` };
+  }
+
   const scriptMatch = path.match(/^workspaces\/(\d+)\/projects\/(\d+)\/script$/);
   if (scriptMatch && method === "PUT") {
     return { path: `/api/workspaces/${scriptMatch[1]}/projects/${scriptMatch[2]}/script` };
@@ -68,13 +73,73 @@ function resolveEndpoint(method: HttpMethod, segments: string[]) {
     return { path: `/api/workspaces/${researchSourceMatch[1]}/projects/${researchSourceMatch[2]}/research-sources/${researchSourceMatch[3]}` };
   }
 
+  const promptsMatch = path.match(/^workspaces\/(\d+)\/projects\/(\d+)\/prompts$/);
+  if (promptsMatch && (method === "GET" || method === "POST")) {
+    return { path: `/api/workspaces/${promptsMatch[1]}/projects/${promptsMatch[2]}/prompts` };
+  }
+
+  const promptRevisionsMatch = path.match(/^workspaces\/(\d+)\/projects\/(\d+)\/prompts\/(\d+)\/revisions$/);
+  if (promptRevisionsMatch && method === "GET") {
+    return { path: `/api/workspaces/${promptRevisionsMatch[1]}/projects/${promptRevisionsMatch[2]}/prompts/${promptRevisionsMatch[3]}/revisions` };
+  }
+
+  const promptMatch = path.match(/^workspaces\/(\d+)\/projects\/(\d+)\/prompts\/(\d+)$/);
+  if (promptMatch && (method === "PATCH" || method === "DELETE")) {
+    return { path: `/api/workspaces/${promptMatch[1]}/projects/${promptMatch[2]}/prompts/${promptMatch[3]}` };
+  }
+
+  const workflowStepTransitionMatch = path.match(/^workspaces\/(\d+)\/projects\/(\d+)\/workflows\/(\d+)\/steps\/(\d+)\/transition$/);
+  if (workflowStepTransitionMatch && method === "POST") {
+    return { path: `/api/workspaces/${workflowStepTransitionMatch[1]}/projects/${workflowStepTransitionMatch[2]}/workflows/${workflowStepTransitionMatch[3]}/steps/${workflowStepTransitionMatch[4]}/transition` };
+  }
+
+  const workflowStepsMatch = path.match(/^workspaces\/(\d+)\/projects\/(\d+)\/workflows\/(\d+)\/steps$/);
+  if (workflowStepsMatch && method === "POST") {
+    return { path: `/api/workspaces/${workflowStepsMatch[1]}/projects/${workflowStepsMatch[2]}/workflows/${workflowStepsMatch[3]}/steps` };
+  }
+
+  const workflowStepMatch = path.match(/^workspaces\/(\d+)\/projects\/(\d+)\/workflows\/(\d+)\/steps\/(\d+)$/);
+  if (workflowStepMatch && (method === "PATCH" || method === "DELETE")) {
+    return { path: `/api/workspaces/${workflowStepMatch[1]}/projects/${workflowStepMatch[2]}/workflows/${workflowStepMatch[3]}/steps/${workflowStepMatch[4]}` };
+  }
+
+  const workflowsMatch = path.match(/^workspaces\/(\d+)\/projects\/(\d+)\/workflows$/);
+  if (workflowsMatch && (method === "GET" || method === "POST")) {
+    return { path: `/api/workspaces/${workflowsMatch[1]}/projects/${workflowsMatch[2]}/workflows` };
+  }
+
+  const workflowMatch = path.match(/^workspaces\/(\d+)\/projects\/(\d+)\/workflows\/(\d+)$/);
+  if (workflowMatch && (method === "GET" || method === "PATCH" || method === "DELETE")) {
+    return { path: `/api/workspaces/${workflowMatch[1]}/projects/${workflowMatch[2]}/workflows/${workflowMatch[3]}` };
+  }
+
   const projectsMatch = path.match(/^workspaces\/(\d+)\/projects$/);
   if (projectsMatch && (method === "GET" || method === "POST")) {
     return { path: `/api/workspaces/${projectsMatch[1]}/projects` };
   }
 
+  const channelsMatch = path.match(/^workspaces\/(\d+)\/channels$/);
+  if (channelsMatch && (method === "GET" || method === "POST")) {
+    return { path: `/api/workspaces/${channelsMatch[1]}/channels` };
+  }
+
+  const channelMatch = path.match(/^workspaces\/(\d+)\/channels\/(\d+)$/);
+  if (channelMatch && (method === "PATCH" || method === "DELETE")) {
+    return { path: `/api/workspaces/${channelMatch[1]}/channels/${channelMatch[2]}` };
+  }
+
+  const membersMatch = path.match(/^workspaces\/(\d+)\/members$/);
+  if (membersMatch && (method === "GET" || method === "POST")) {
+    return { path: `/api/workspaces/${membersMatch[1]}/members` };
+  }
+
+  const memberMatch = path.match(/^workspaces\/(\d+)\/members\/(\d+)$/);
+  if (memberMatch && (method === "PATCH" || method === "DELETE")) {
+    return { path: `/api/workspaces/${memberMatch[1]}/members/${memberMatch[2]}` };
+  }
+
   const workspaceMatch = path.match(/^workspaces\/(\d+)$/);
-  if (workspaceMatch && method === "GET") {
+  if (workspaceMatch && (method === "GET" || method === "PATCH")) {
     return { path: `/api/workspaces/${workspaceMatch[1]}` };
   }
 

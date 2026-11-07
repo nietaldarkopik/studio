@@ -46,6 +46,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import ProductionWorkspace from "./production-workspace";
+import WorkflowAutomation from "./workflow-automation";
+import WorkspaceSettings from "./workspace-settings";
 
 type StudioProject = {
   id: string;
@@ -131,6 +133,7 @@ function mapApiProject(project: {
 
 export default function Home() {
   const [activeNav, setActiveNav] = useState("Overview");
+  const [productionTab, setProductionTab] = useState<"script" | "storyboard" | "research" | "prompt">("script");
   const [projects, setProjects] = useState<StudioProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>("checking");
@@ -368,7 +371,15 @@ export default function Home() {
   }
 
   function navigate(label: string) {
-    setActiveNav(label === "Script & Storyboard" ? "Production Studio" : label);
+    if (label === "Script & Storyboard") {
+      setProductionTab("script");
+      setActiveNav("Production Studio");
+    } else if (label === "Prompt Builder") {
+      setProductionTab("prompt");
+      setActiveNav("Production Studio");
+    } else {
+      setActiveNav(label);
+    }
     setSearchOpen(false);
   }
 
@@ -496,10 +507,24 @@ export default function Home() {
             />
           ) : activeNav === "Production Studio" && activeProject && workspaceId !== null ? (
             <ProductionWorkspace
+              key={`${activeProject.id}-${productionTab}`}
+              project={activeProject}
+              workspaceId={workspaceId}
+              initialTab={productionTab}
+              onBack={() => navigate("Projects")}
+              onToast={setToast}
+            />
+          ) : activeNav === "Settings" && workspaceId !== null ? (
+            <WorkspaceSettings
+              workspaceId={workspaceId}
+              onToast={setToast}
+              onWorkspaceRenamed={setWorkspaceName}
+            />
+          ) : activeNav === "Workflow Automation" && workspaceId !== null && activeProject ? (
+            <WorkflowAutomation
               key={activeProject.id}
               project={activeProject}
               workspaceId={workspaceId}
-              onBack={() => navigate("Projects")}
               onToast={setToast}
             />
           ) : (

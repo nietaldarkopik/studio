@@ -8,10 +8,12 @@ import {
   Check,
   Clock3,
   FileText,
+  History,
   LoaderCircle,
   Plus,
   RotateCcw,
   Save,
+  Search,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -82,6 +84,17 @@ type SourceDraft = {
   reliability_note: string;
 };
 
+type SourceCandidate = {
+  title: string;
+  url: string;
+  publisher: string | null;
+  published_at: string | null;
+  snippet: string;
+  key_findings: string;
+  reliability_note: string | null;
+  reason: string | null;
+};
+
 type SceneRecord = {
   id: number;
   position: number;
@@ -95,6 +108,88 @@ type SceneRecord = {
 
 type SceneDraft = Omit<SceneRecord, "id" | "position" | "status"> & {
   id: number | null;
+};
+
+type PromptRecord = {
+  id: number;
+  scene_id: number | null;
+  scene_title: string | null;
+  title: string | null;
+  positive: string;
+  negative: string | null;
+  style: string | null;
+  camera: string | null;
+  lighting: string | null;
+  mood: string | null;
+  notes: string | null;
+  status: "draft" | "approved";
+  version: number;
+  revision_count: number;
+  updated_at: string | null;
+};
+
+type PromptDraft = {
+  title: string;
+  positive: string;
+  negative: string;
+  style: string;
+  camera: string;
+  lighting: string;
+  mood: string;
+  notes: string;
+};
+
+type PromptRevisionRecord = {
+  version: number;
+  snapshot: Record<string, string | null>;
+  created_at: string | null;
+};
+
+type AiGenerationState = {
+  id: number;
+  task: "prompt" | "prompt_all" | "research" | "research_search";
+  status: "queued" | "running" | "completed" | "failed";
+  model: string | null;
+  input: Record<string, unknown>;
+  result: Record<string, unknown>;
+  error_message: string | null;
+};
+
+function draftText(result: Record<string, unknown>, key: string): string {
+  const value = result[key];
+  return typeof value === "string" ? value : "";
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function parseSourceCandidates(value: unknown): SourceCandidate[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const record = entry as Record<string, unknown>;
+    if (typeof record.url !== "string" || record.url.trim() === "") return [];
+    const text = (key: string) => (typeof record[key] === "string" ? (record[key] as string) : null);
+    return [{
+      title: text("title") ?? sourceDomain(record.url),
+      url: record.url,
+      publisher: text("publisher"),
+      published_at: text("published_at"),
+      snippet: text("snippet") ?? "",
+      key_findings: text("key_findings") ?? "",
+      reliability_note: text("reliability_note"),
+      reason: text("reason"),
+    }];
+  });
+}
+
+const sourceFieldLabels: Record<string, string> = {
+  title: "judul",
+  publisher: "penerbit",
+  published_at: "tanggal terbit",
+  key_findings: "temuan kunci",
+  reliability_note: "catatan reliabilitas",
 };
 
 const emptyScript: ScriptDraft = {
@@ -131,6 +226,17 @@ const emptySource: SourceDraft = {
   reliability_note: "",
 };
 
+const emptyPrompt: PromptDraft = {
+  title: "",
+  positive: "",
+  negative: "",
+  style: "",
+  camera: "",
+  lighting: "",
+  mood: "",
+  notes: "",
+};
+
 const formatOptions = [
   { value: "chain_build", label: "A · Rantai Bangun" },
   { value: "mystery_investigation", label: "B · Misteri & Investigasi" },
@@ -160,18 +266,43 @@ function sourceDomain(url: string) {
   }
 }
 
+function toPromptDraft(prompt: PromptRecord): PromptDraft {
+  return {
+    title: prompt.title ?? "",
+    positive: prompt.positive,
+    negative: prompt.negative ?? "",
+    style: prompt.style ?? "",
+    camera: prompt.camera ?? "",
+    lighting: prompt.lighting ?? "",
+    mood: prompt.mood ?? "",
+    notes: prompt.notes ?? "",
+  };
+}
+
+const promptFields = Object.keys(emptyPrompt) as (keyof PromptDraft)[];
+
+function formatTimestamp(value: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : date.toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" });
+}
+
 export default function ProductionWorkspace({
   project,
   workspaceId,
+  initialTab = "script",
   onBack,
   onToast,
 }: {
   project: WorkspaceProject;
   workspaceId: number;
+  initialTab?: "script" | "storyboard" | "research" | "prompt";
   onBack: () => void;
   onToast: (message: string) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"script" | "storyboard" | "research">("script");
+  const [activeTab, setActiveTab] = useState<"script" | "storyboard" | "research" | "prompt">(initialTab);
   const [script, setScript] = useState<ScriptDraft>(emptyScript);
   const [savedScript, setSavedScript] = useState<ScriptDraft>(emptyScript);
   const [scenes, setScenes] = useState<SceneRecord[]>([]);
@@ -179,6 +310,12 @@ export default function ProductionWorkspace({
   const [sceneDraft, setSceneDraft] = useState<SceneDraft>(emptyScene);
   const [research, setResearch] = useState<ResearchSummary>(emptyResearch);
   const [sourceDraft, setSourceDraft] = useState<SourceDraft>(emptySource);
+  const [prompts, setPrompts] = useState<PromptRecord[]>([]);
+  const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null);
+  const [promptSceneId, setPromptSceneId] = useState<number | null>(null);
+  const [promptDraft, setPromptDraft] = useState<PromptDraft>(emptyPrompt);
+  const [promptRevisions, setPromptRevisions] = useState<PromptRevisionRecord[]>([]);
+  const [revisionsOpen, setRevisionsOpen] = useState(false);
   const [storyboardDraft, setStoryboardDraft] = useState<DraftScene[]>([]);
   const [draftGenerationId, setDraftGenerationId] = useState<number | null>(null);
   const [draftImported, setDraftImported] = useState(false);
@@ -187,6 +324,15 @@ export default function ProductionWorkspace({
   const [generating, setGenerating] = useState(false);
   const [sceneBusy, setSceneBusy] = useState(false);
   const [researchBusy, setResearchBusy] = useState(false);
+  const [promptBusy, setPromptBusy] = useState(false);
+  const [promptAiBusy, setPromptAiBusy] = useState(false);
+  const [promptAllAiBusy, setPromptAllAiBusy] = useState(false);
+  const [researchAiBusy, setResearchAiBusy] = useState(false);
+  const [researchSearchBusy, setResearchSearchBusy] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sourceCandidates, setSourceCandidates] = useState<SourceCandidate[]>([]);
+  const [inferredFields, setInferredFields] = useState<string[]>([]);
+  const [revisionsBusy, setRevisionsBusy] = useState(false);
   const [error, setError] = useState("");
 
   const baseUrl = `/api/studio/workspaces/${workspaceId}/projects/${project.id}`;
@@ -204,6 +350,10 @@ export default function ProductionWorkspace({
     || sceneDraft.camera_direction !== (selectedScene.camera_direction ?? "")
     || sceneDraft.duration_seconds !== selectedScene.duration_seconds
   );
+  const selectedPrompt = prompts.find((prompt) => prompt.id === selectedPromptId) ?? null;
+  const promptScene = scenes.find((scene) => scene.id === promptSceneId) ?? null;
+  const promptBaseline = selectedPrompt ? toPromptDraft(selectedPrompt) : emptyPrompt;
+  const promptDirty = promptFields.some((field) => promptDraft[field] !== promptBaseline[field]);
 
   function applyGenerationDraft(generation: ScriptGenerationState, loadedScript: ScriptDraft) {
     setStoryboardDraft(generation.scenes ?? []);
@@ -227,9 +377,10 @@ export default function ProductionWorkspace({
       setLoading(true);
       setError("");
       try {
-        const [productionResponse, generationResponse] = await Promise.all([
+        const [productionResponse, generationResponse, promptsResponse] = await Promise.all([
           fetch(`${baseUrl}/production`, { cache: "no-store" }),
           fetch(`${baseUrl}/script/generate`, { cache: "no-store" }),
+          fetch(`${baseUrl}/prompts`, { cache: "no-store" }),
         ]);
         const result = await productionResponse.json();
         if (!productionResponse.ok) throw new Error(result.message || "Ruang produksi gagal dimuat.");
@@ -239,12 +390,28 @@ export default function ProductionWorkspace({
           ? { ...emptyScript, ...result.script }
           : emptyScript;
         const loadedScenes = result.scenes as SceneRecord[];
+        const loadedPrompts = promptsResponse.ok
+          ? ((await promptsResponse.json()).prompts as PromptRecord[])
+          : [];
         setScript(loadedScript);
         setSavedScript(loadedScript);
         setScenes(loadedScenes);
         setSelectedSceneId(loadedScenes[0]?.id ?? null);
         setSceneDraft(loadedScenes[0] ? toSceneDraft(loadedScenes[0]) : emptyScene);
         setResearch((result.research as ResearchSummary) ?? emptyResearch);
+        setPrompts(loadedPrompts);
+        const firstSceneWithPrompt = loadedScenes.find((scene) =>
+          loadedPrompts.some((prompt) => prompt.scene_id === scene.id));
+        if (firstSceneWithPrompt) {
+          const existing = loadedPrompts.find((prompt) => prompt.scene_id === firstSceneWithPrompt.id) ?? null;
+          setPromptSceneId(firstSceneWithPrompt.id);
+          setSelectedPromptId(existing?.id ?? null);
+          setPromptDraft(existing ? toPromptDraft(existing) : emptyPrompt);
+        } else {
+          setPromptSceneId(loadedScenes[0]?.id ?? null);
+          setSelectedPromptId(null);
+          setPromptDraft(emptyPrompt);
+        }
 
         const generationResult = generationResponse.ok ? await generationResponse.json() : null;
         const generation = (generationResult?.generation ?? null) as ScriptGenerationState | null;
@@ -305,6 +472,136 @@ export default function ProductionWorkspace({
     };
   }, [generating, baseUrl, onToast]);
 
+  useEffect(() => {
+    let active = true;
+
+    async function resumeAiDrafts() {
+      try {
+        const [promptResponse, promptAllResponse, researchResponse, searchResponse] = await Promise.all([
+          fetch(`${baseUrl}/ai/prompt`, { cache: "no-store" }),
+          fetch(`${baseUrl}/ai/prompt_all`, { cache: "no-store" }),
+          fetch(`${baseUrl}/ai/research`, { cache: "no-store" }),
+          fetch(`${baseUrl}/ai/research_search`, { cache: "no-store" }),
+        ]);
+        if (!active) return;
+        const promptGeneration = promptResponse.ok
+          ? ((await promptResponse.json()).generation as AiGenerationState | null)
+          : null;
+        const promptAllGeneration = promptAllResponse.ok
+          ? ((await promptAllResponse.json()).generation as AiGenerationState | null)
+          : null;
+        const researchGeneration = researchResponse.ok
+          ? ((await researchResponse.json()).generation as AiGenerationState | null)
+          : null;
+        const searchGeneration = searchResponse.ok
+          ? ((await searchResponse.json()).generation as AiGenerationState | null)
+          : null;
+        if (promptGeneration?.status === "queued" || promptGeneration?.status === "running") setPromptAiBusy(true);
+        if (promptAllGeneration?.status === "queued" || promptAllGeneration?.status === "running") setPromptAllAiBusy(true);
+        if (researchGeneration?.status === "queued" || researchGeneration?.status === "running") setResearchAiBusy(true);
+        if (searchGeneration?.status === "queued" || searchGeneration?.status === "running") setResearchSearchBusy(true);
+      } catch {
+        // Status draf AI bersifat opsional; kegagalan di sini tidak boleh menggagalkan pemuatan ruang produksi.
+      }
+    }
+
+    void resumeAiDrafts();
+    return () => {
+      active = false;
+    };
+  }, [baseUrl]);
+
+  useEffect(() => {
+    if (!promptAiBusy && !promptAllAiBusy && !researchAiBusy && !researchSearchBusy) return;
+    let active = true;
+
+    async function syncPrompts() {
+      const response = await fetch(`${baseUrl}/prompts`, { cache: "no-store" });
+      if (!response.ok || !active) return;
+      const list = (((await response.json()).prompts ?? []) as PromptRecord[]);
+      const existing = list.find((prompt) => prompt.scene_id === promptSceneId) ?? null;
+      setPrompts(list);
+      setSelectedPromptId(existing?.id ?? null);
+      setPromptDraft(existing ? toPromptDraft(existing) : emptyPrompt);
+      setPromptRevisions([]);
+      setRevisionsOpen(false);
+    }
+
+    const timer = window.setInterval(async () => {
+      const tasks: Array<AiGenerationState["task"]> = [];
+      if (promptAiBusy) tasks.push("prompt");
+      if (promptAllAiBusy) tasks.push("prompt_all");
+      if (researchAiBusy) tasks.push("research");
+      if (researchSearchBusy) tasks.push("research_search");
+
+      for (const task of tasks) {
+        try {
+          const response = await fetch(`${baseUrl}/ai/${task}`, { cache: "no-store" });
+          if (!response.ok) continue;
+          const generation = ((await response.json()).generation ?? null) as AiGenerationState | null;
+          if (!active || generation === null) continue;
+
+          if (generation.status === "completed") {
+            if (task === "prompt") {
+              setPromptDraft({
+                title: draftText(generation.result, "title"),
+                positive: draftText(generation.result, "positive"),
+                negative: draftText(generation.result, "negative"),
+                style: draftText(generation.result, "style"),
+                camera: draftText(generation.result, "camera"),
+                lighting: draftText(generation.result, "lighting"),
+                mood: draftText(generation.result, "mood"),
+                notes: draftText(generation.result, "notes"),
+              });
+              setPromptAiBusy(false);
+              onToast(`Draf prompt ${generation.model ?? "AI"} siap. Periksa dan edit sebelum disimpan.`);
+            } else if (task === "prompt_all") {
+              const created = typeof generation.result.created === "number" ? generation.result.created : 0;
+              setPromptAllAiBusy(false);
+              await syncPrompts();
+              onToast(`${created} prompt draf dibuat untuk adegan yang belum terisi. Periksa dan setujui sebelum produksi.`);
+            } else if (task === "research_search") {
+              const candidates = parseSourceCandidates(generation.result.candidates);
+              setSourceCandidates(candidates);
+              setResearchSearchBusy(false);
+              onToast(`${candidates.length} kandidat sumber ditemukan. Pilih salah satu untuk mengisi form, lalu verifikasi sebelum disimpan.`);
+            } else {
+              setSourceDraft((current) => ({
+                ...current,
+                title: draftText(generation.result, "title") || current.title,
+                publisher: draftText(generation.result, "publisher") || current.publisher,
+                published_at: draftText(generation.result, "published_at") || current.published_at,
+                key_findings: draftText(generation.result, "key_findings"),
+                reliability_note: draftText(generation.result, "reliability_note"),
+              }));
+              setInferredFields(stringList(generation.result.inferred_fields));
+              setResearchAiBusy(false);
+              onToast(`Draf sumber ${generation.model ?? "AI"} siap. Field yang diinferensi ditandai; verifikasi ke sumber aslinya sebelum disimpan.`);
+            }
+          } else if (generation.status === "failed") {
+            setError(generation.error_message || "Draf AI gagal dibuat.");
+            if (task === "prompt") {
+              setPromptAiBusy(false);
+            } else if (task === "prompt_all") {
+              setPromptAllAiBusy(false);
+            } else if (task === "research_search") {
+              setResearchSearchBusy(false);
+            } else {
+              setResearchAiBusy(false);
+            }
+          }
+        } catch {
+          // Job tetap berjalan di backend; polling dilanjutkan sampai ada status akhir.
+        }
+      }
+    }, 2500);
+
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [promptAiBusy, promptAllAiBusy, researchAiBusy, researchSearchBusy, baseUrl, onToast, promptSceneId]);
+
   async function saveScript() {
     setSaving(true);
     setError("");
@@ -347,6 +644,123 @@ export default function ProductionWorkspace({
     } catch (generationError) {
       setError(generationError instanceof Error ? generationError.message : "Draf AI gagal dibuat.");
     }
+  }
+
+  async function generatePromptWithAi() {
+    if (promptSceneId === null) return;
+    if (promptDraft.positive.trim()
+      && !window.confirm("Draf AI akan mengganti isi prompt yang belum disimpan. Lanjutkan?")) {
+      return;
+    }
+
+    setError("");
+    try {
+      const response = await fetch(`${baseUrl}/ai/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scene_id: promptSceneId }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Draf prompt AI gagal dibuat.");
+
+      setPromptAiBusy(true);
+      onToast("Draf prompt AI diproses di latar belakang. Isi form akan terisi otomatis saat selesai.");
+    } catch (aiError) {
+      setError(aiError instanceof Error ? aiError.message : "Draf prompt AI gagal dibuat.");
+    }
+  }
+
+  async function generateAllPromptsWithAi() {
+    const pending = scenes.filter((scene) => !prompts.some((prompt) => prompt.scene_id === scene.id));
+    if (pending.length === 0) {
+      setError("Semua adegan sudah memiliki prompt.");
+      return;
+    }
+    if (!window.confirm(`${pending.length} adegan akan diisi draf prompt dari AI sekaligus.${promptDirty ? " Perubahan prompt yang belum disimpan akan tergantikan." : ""} Lanjutkan?`)) {
+      return;
+    }
+
+    setError("");
+    try {
+      const response = await fetch(`${baseUrl}/ai/prompt_all`, { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Draf prompt AI gagal dibuat.");
+
+      setPromptAllAiBusy(true);
+      onToast("AI sedang menyusun prompt untuk semua adegan. Daftar prompt akan diperbarui otomatis saat selesai.");
+    } catch (aiError) {
+      setError(aiError instanceof Error ? aiError.message : "Draf prompt AI gagal dibuat.");
+    }
+  }
+
+  async function generateSourceWithAi() {
+    if (!sourceDraft.url.trim()) {
+      setError("Isi URL sumber terlebih dahulu agar AI dapat menyusun draf temuan.");
+      return;
+    }
+    if (sourceDraft.key_findings.trim()
+      && !window.confirm("Draf AI akan mengganti temuan kunci yang sudah diisi. Lanjutkan?")) {
+      return;
+    }
+
+    setError("");
+    try {
+      const response = await fetch(`${baseUrl}/ai/research`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: sourceDraft.url.trim(),
+          title: sourceDraft.title.trim() || null,
+          publisher: sourceDraft.publisher.trim() || null,
+          published_at: sourceDraft.published_at.trim() || null,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Draf temuan AI gagal dibuat.");
+
+      setResearchAiBusy(true);
+      onToast("Draf riset AI diproses di latar belakang. Temuan kunci akan terisi otomatis saat selesai.");
+    } catch (aiError) {
+      setError(aiError instanceof Error ? aiError.message : "Draf temuan AI gagal dibuat.");
+    }
+  }
+
+  async function searchSourcesWithAi() {
+    const query = searchQuery.trim();
+    if (!query) {
+      setError("Isi kata kunci pencarian terlebih dahulu.");
+      return;
+    }
+
+    setError("");
+    try {
+      const response = await fetch(`${baseUrl}/ai/research_search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Pencarian sumber gagal dijalankan.");
+
+      setSourceCandidates([]);
+      setResearchSearchBusy(true);
+      onToast("Pencarian sumber berjalan di latar belakang. Hasil akan muncul otomatis saat selesai.");
+    } catch (searchError) {
+      setError(searchError instanceof Error ? searchError.message : "Pencarian sumber gagal dijalankan.");
+    }
+  }
+
+  function applyCandidate(candidate: SourceCandidate) {
+    setSourceDraft({
+      title: candidate.title,
+      url: candidate.url,
+      publisher: candidate.publisher ?? "",
+      published_at: candidate.published_at ?? "",
+      key_findings: candidate.key_findings,
+      reliability_note: candidate.reliability_note ?? "",
+    });
+    setInferredFields(["title", "publisher", "published_at", "key_findings", "reliability_note"]);
+    onToast("Form sumber terisi dari hasil pencarian. Periksa dan sunting sebelum disimpan.");
   }
 
   async function createScene() {
@@ -496,6 +910,7 @@ export default function ProductionWorkspace({
       if (!response.ok) throw new Error(result.message || "Sumber riset gagal disimpan.");
       setResearch(result.research as ResearchSummary);
       setSourceDraft(emptySource);
+      setInferredFields([]);
       onToast("Sumber riset ditambahkan. Tandai terverifikasi setelah Anda memeriksa isinya.");
     } catch (sourceError) {
       setError(sourceError instanceof Error ? sourceError.message : "Sumber riset gagal disimpan.");
@@ -541,6 +956,124 @@ export default function ProductionWorkspace({
     }
   }
 
+  async function refreshPrompts(keepSceneId: number | null) {
+    const response = await fetch(`${baseUrl}/prompts`, { cache: "no-store" });
+    if (!response.ok) return;
+    const result = await response.json();
+    const list = (result.prompts ?? []) as PromptRecord[];
+    setPrompts(list);
+    const existing = list.find((prompt) => prompt.scene_id === keepSceneId) ?? null;
+    setSelectedPromptId(existing?.id ?? null);
+    setPromptDraft(existing ? toPromptDraft(existing) : emptyPrompt);
+    setPromptRevisions([]);
+    setRevisionsOpen(false);
+  }
+
+  function selectPromptScene(sceneId: number) {
+    if (promptDirty && !window.confirm("Perubahan prompt belum disimpan. Ganti adegan dan buang perubahan?")) return;
+    const existing = prompts.find((prompt) => prompt.scene_id === sceneId) ?? null;
+    setPromptSceneId(sceneId);
+    setSelectedPromptId(existing?.id ?? null);
+    setPromptDraft(existing ? toPromptDraft(existing) : emptyPrompt);
+    setPromptRevisions([]);
+    setRevisionsOpen(false);
+  }
+
+  async function savePrompt() {
+    if (promptSceneId === null) return;
+    setPromptBusy(true);
+    setError("");
+    try {
+      const payload = {
+        title: promptDraft.title.trim() || null,
+        positive: promptDraft.positive.trim(),
+        negative: promptDraft.negative.trim() || null,
+        style: promptDraft.style.trim() || null,
+        camera: promptDraft.camera.trim() || null,
+        lighting: promptDraft.lighting.trim() || null,
+        mood: promptDraft.mood.trim() || null,
+        notes: promptDraft.notes.trim() || null,
+      };
+      const response = await fetch(
+        selectedPrompt ? `${baseUrl}/prompts/${selectedPrompt.id}` : `${baseUrl}/prompts`,
+        {
+          method: selectedPrompt ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(selectedPrompt ? payload : { ...payload, scene_id: promptSceneId }),
+        },
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Prompt gagal disimpan.");
+      await refreshPrompts(promptSceneId);
+      onToast(selectedPrompt ? "Prompt tersimpan. Revisi baru dibuat bila isi berubah." : "Prompt terstruktur tersimpan.");
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Prompt gagal disimpan.");
+    } finally {
+      setPromptBusy(false);
+    }
+  }
+
+  async function togglePromptApproved() {
+    if (!selectedPrompt) return;
+    const nextStatus = selectedPrompt.status === "approved" ? "draft" : "approved";
+    setPromptBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`${baseUrl}/prompts/${selectedPrompt.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Status prompt gagal diubah.");
+      const updated = result.prompt as PromptRecord;
+      setPrompts((current) => current.map((prompt) => prompt.id === updated.id ? updated : prompt));
+      onToast(nextStatus === "approved" ? "Prompt disetujui." : "Persetujuan prompt dibatalkan.");
+    } catch (statusError) {
+      setError(statusError instanceof Error ? statusError.message : "Status prompt gagal diubah.");
+    } finally {
+      setPromptBusy(false);
+    }
+  }
+
+  async function deletePrompt() {
+    if (!selectedPrompt || !window.confirm(`Hapus prompt untuk "${selectedPrompt.scene_title ?? promptScene?.title ?? "adegan ini"}"?`)) return;
+    setPromptBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`${baseUrl}/prompts/${selectedPrompt.id}`, { method: "DELETE" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Prompt gagal dihapus.");
+      await refreshPrompts(promptSceneId);
+      onToast("Prompt dihapus dari adegan.");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Prompt gagal dihapus.");
+    } finally {
+      setPromptBusy(false);
+    }
+  }
+
+  async function toggleRevisions() {
+    if (!selectedPrompt) return;
+    if (revisionsOpen) {
+      setRevisionsOpen(false);
+      return;
+    }
+    setRevisionsBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`${baseUrl}/prompts/${selectedPrompt.id}/revisions`, { cache: "no-store" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Riwayat revisi gagal dimuat.");
+      setPromptRevisions((result.revisions ?? []) as PromptRevisionRecord[]);
+      setRevisionsOpen(true);
+    } catch (historyError) {
+      setError(historyError instanceof Error ? historyError.message : "Riwayat revisi gagal dimuat.");
+    } finally {
+      setRevisionsBusy(false);
+    }
+  }
+
   function selectScene(scene: SceneRecord) {
     if (sceneDirty && !window.confirm("Perubahan adegan belum disimpan. Ganti adegan dan buang perubahan?")) return;
     setSelectedSceneId(scene.id);
@@ -569,6 +1102,7 @@ export default function ProductionWorkspace({
         <button className={activeTab === "script" ? "active" : ""} role="tab" aria-selected={activeTab === "script"} onClick={() => setActiveTab("script")}><FileText size={15} /> Naskah</button>
         <button className={activeTab === "storyboard" ? "active" : ""} role="tab" aria-selected={activeTab === "storyboard"} onClick={() => setActiveTab("storyboard")}><Clock3 size={15} /> Storyboard <span>{scenes.length}</span></button>
         <button className={activeTab === "research" ? "active" : ""} role="tab" aria-selected={activeTab === "research"} onClick={() => setActiveTab("research")}><ShieldCheck size={15} /> Riset {research.source_count > 0 && <span>{research.source_count}</span>}</button>
+        <button className={activeTab === "prompt" ? "active" : ""} role="tab" aria-selected={activeTab === "prompt"} onClick={() => setActiveTab("prompt")}><Sparkles size={15} /> Prompt {prompts.length > 0 && <span>{prompts.length}</span>}</button>
       </div>
 
       {error && <div className="production-error" role="alert">{error}</div>}
@@ -694,7 +1228,7 @@ export default function ProductionWorkspace({
           </div>
           <div className="storyboard-footnote"><ArrowRight size={13} /> Preview visual, prompt Blender terstruktur, dan persetujuan adegan akan ditambahkan pada tahap berikutnya.</div>
         </section>
-      ) : (
+      ) : activeTab === "research" ? (
         <section className="research-panel">
           <div className="production-panel-heading">
             <div><span className="section-kicker">RESEARCH SOURCES</span><h2>Riset &amp; verifikasi</h2></div>
@@ -706,6 +1240,51 @@ export default function ProductionWorkspace({
             {research.verified
               ? "Riset terverifikasi: minimal 2 sumber dari 2 domain independen telah ditandai."
               : `Belum terverifikasi — butuh minimal 2 sumber terverifikasi dari 2 domain berbeda (${research.verified_count}/2 sumber · ${research.independent_domain_count}/2 domain).`}
+          </div>
+
+          <div className="research-search">
+            <label className="production-label" htmlFor="research-query">Cari sumber di mesin pencari</label>
+            <div className="research-search-row">
+              <input
+                id="research-query"
+                className="production-input"
+                maxLength={300}
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Contoh: laporan resmi suhu ekstrem kota 2024"
+              />
+              <button
+                className="button-outline ai-draft-button"
+                onClick={() => void searchSourcesWithAi()}
+                disabled={researchSearchBusy || researchBusy || !searchQuery.trim()}
+              >
+                {researchSearchBusy ? <LoaderCircle size={13} className="spin-icon" /> : <Search size={13} />}
+                {researchSearchBusy ? "Mencari..." : "Cari sumber"}
+              </button>
+            </div>
+            <small className="research-search-hint">
+              Hasil berasal dari mesin pencari sungguhan; AI hanya memilih dan meringkas. Verifikasi setiap sumber sebelum dipakai.
+            </small>
+            {sourceCandidates.length > 0 && (
+              <ul className="research-candidates">
+                {sourceCandidates.map((candidate) => (
+                  <li key={candidate.url}>
+                    <div className="research-candidate-main">
+                      <strong>{candidate.title}</strong>
+                      <a className="research-link" href={candidate.url} target="_blank" rel="noreferrer">{sourceDomain(candidate.url)}</a>
+                      {(candidate.publisher || candidate.published_at) && (
+                        <small>{[candidate.publisher, candidate.published_at].filter(Boolean).join(" · ")}</small>
+                      )}
+                      {candidate.reason && <p className="research-note">{candidate.reason}</p>}
+                      {candidate.key_findings && <p>{candidate.key_findings}</p>}
+                    </div>
+                    <button className="button-outline" onClick={() => applyCandidate(candidate)} disabled={researchBusy}>
+                      <Plus size={13} /> Pakai
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           <div className="research-form">
@@ -731,12 +1310,24 @@ export default function ProductionWorkspace({
             <textarea id="source-findings" className="production-textarea" rows={3} value={sourceDraft.key_findings} onChange={(event) => setSourceDraft((current) => ({ ...current, key_findings: event.target.value }))} placeholder="Fakta atau angka yang akan dipakai di naskah..." />
             <label className="production-label" htmlFor="source-note">Catatan reliabilitas</label>
             <input id="source-note" className="production-input" value={sourceDraft.reliability_note} onChange={(event) => setSourceDraft((current) => ({ ...current, reliability_note: event.target.value }))} placeholder="Primer, sekunder, atau perlu kehati-hatian" />
+            {inferredFields.length > 0 && (
+              <div className="research-inferred">
+                <Clock3 size={13} />
+                Field berikut diisi AI dan perlu diverifikasi: {inferredFields.map((field) => sourceFieldLabels[field] ?? field).join(", ")}.
+              </div>
+            )}
             <div className="production-save-row">
-              <span>Sumber baru tersimpan sebagai belum terverifikasi.</span>
-              <button className="button-primary" onClick={addSource} disabled={researchBusy || !sourceDraft.title.trim() || !sourceDraft.url.trim()}>
-                {researchBusy ? <LoaderCircle size={14} className="spin-icon" /> : <Plus size={14} />}
-                {researchBusy ? "Menyimpan..." : "Tambah sumber"}
-              </button>
+              <span>{researchAiBusy ? "AI sedang mengisi draf sumber ini dari isi halaman." : "Sumber baru tersimpan sebagai belum terverifikasi."}</span>
+              <div className="prompt-actions">
+                <button className="button-outline ai-draft-button" onClick={() => void generateSourceWithAi()} disabled={researchAiBusy || researchBusy || !sourceDraft.url.trim()}>
+                  {researchAiBusy ? <LoaderCircle size={13} className="spin-icon" /> : <Sparkles size={13} />}
+                  {researchAiBusy ? "Draf AI diproses..." : "Isi otomatis dengan AI"}
+                </button>
+                <button className="button-primary" onClick={addSource} disabled={researchBusy || !sourceDraft.title.trim() || !sourceDraft.url.trim()}>
+                  {researchBusy ? <LoaderCircle size={14} className="spin-icon" /> : <Plus size={14} />}
+                  {researchBusy ? "Menyimpan..." : "Tambah sumber"}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -769,6 +1360,155 @@ export default function ProductionWorkspace({
               ))}
             </ul>
           )}
+        </section>
+      ) : (
+        <section className="prompt-panel">
+          <div className="production-panel-heading">
+            <div><span className="section-kicker">PROMPT BUILDER</span><h2>Prompt terstruktur</h2></div>
+            <div className="prompt-actions">
+              <span className="production-version">{prompts.length} prompt · {scenes.length} adegan</span>
+              <button
+                className="button-outline ai-draft-button"
+                onClick={() => void generateAllPromptsWithAi()}
+                disabled={promptAllAiBusy || promptAiBusy || promptBusy || scenes.length === 0}
+              >
+                {promptAllAiBusy ? <LoaderCircle size={13} className="spin-icon" /> : <Sparkles size={13} />}
+                {promptAllAiBusy ? "Menyusun semua adegan..." : "Isi semua adegan"}
+              </button>
+            </div>
+          </div>
+
+          {scenes.length === 0 ? (
+            <div className="prompt-empty">Storyboard belum memiliki adegan. Tambahkan adegan terlebih dahulu di tab Storyboard, lalu susun prompt untuk setiap adegan.</div>
+          ) : (
+            <div className="prompt-layout">
+              <aside className="prompt-scene-list">
+                <div className="scene-list-heading"><span>ADEGAN</span></div>
+                {scenes.map((scene, index) => {
+                  const prompt = prompts.find((entry) => entry.scene_id === scene.id);
+                  const state = prompt?.status === "approved" ? "approved" : prompt ? "draft" : "empty";
+                  return (
+                    <button
+                      key={scene.id}
+                      className={`prompt-scene-row ${scene.id === promptSceneId ? "selected" : ""}`}
+                      onClick={() => selectPromptScene(scene.id)}
+                    >
+                      <span>{String(index + 1).padStart(2, "0")}</span>
+                      <strong>{scene.title}</strong>
+                      <small className={`prompt-tag ${state}`}>
+                        {prompt ? (prompt.status === "approved" ? "Disetujui" : `Draf v${prompt.version}`) : "Belum ada"}
+                      </small>
+                    </button>
+                  );
+                })}
+              </aside>
+
+              <div className="prompt-editor-panel">
+                {promptScene === null ? (
+                  <div className="scene-editor-empty"><div><Sparkles size={20} /></div><h3>Pilih adegan untuk menyusun prompt.</h3><p>Setiap adegan memiliki satu prompt terstruktur dengan riwayat revisi tersimpan.</p></div>
+                ) : (
+                  <>
+                    <div className="scene-editor-heading">
+                      <div>
+                        <span className="section-kicker">PROMPT · {promptScene.title}</span>
+                        <span className="scene-draft-pill">
+                          {selectedPrompt ? `Versi ${selectedPrompt.version} · ${selectedPrompt.revision_count} revisi` : "Prompt baru"}
+                        </span>
+                      </div>
+                      {selectedPrompt && (
+                        <button className="icon-button" aria-label="Hapus prompt" disabled={promptBusy} onClick={() => void deletePrompt()}><Trash2 size={15} /></button>
+                      )}
+                    </div>
+
+                    <label className="production-label" htmlFor="prompt-title">Judul prompt</label>
+                    <input id="prompt-title" className="production-input" maxLength={120} value={promptDraft.title} onChange={(event) => setPromptDraft((current) => ({ ...current, title: event.target.value }))} placeholder="Contoh: Wide establishing — kota di malam hari" />
+
+                    <label className="production-label" htmlFor="prompt-positive">Positive prompt <span className="prompt-required">wajib</span></label>
+                    <textarea id="prompt-positive" className="production-textarea" rows={4} value={promptDraft.positive} onChange={(event) => setPromptDraft((current) => ({ ...current, positive: event.target.value }))} placeholder="Deskripsi utama subjek, aksi, komposisi, dan gaya..." />
+
+                    <label className="production-label" htmlFor="prompt-negative">Negative prompt</label>
+                    <textarea id="prompt-negative" className="production-textarea" rows={2} value={promptDraft.negative} onChange={(event) => setPromptDraft((current) => ({ ...current, negative: event.target.value }))} placeholder="Elemen yang harus dihindari, mis. blur, teks, distorsi..." />
+
+                    <div className="prompt-field-grid">
+                      <div>
+                        <label className="production-label" htmlFor="prompt-style">Gaya</label>
+                        <input id="prompt-style" className="production-input" maxLength={160} value={promptDraft.style} onChange={(event) => setPromptDraft((current) => ({ ...current, style: event.target.value }))} placeholder="Cinematic, dokumenter..." />
+                      </div>
+                      <div>
+                        <label className="production-label" htmlFor="prompt-camera">Kamera</label>
+                        <input id="prompt-camera" className="production-input" maxLength={160} value={promptDraft.camera} onChange={(event) => setPromptDraft((current) => ({ ...current, camera: event.target.value }))} placeholder="35mm, low angle..." />
+                      </div>
+                      <div>
+                        <label className="production-label" htmlFor="prompt-lighting">Pencahayaan</label>
+                        <input id="prompt-lighting" className="production-input" maxLength={160} value={promptDraft.lighting} onChange={(event) => setPromptDraft((current) => ({ ...current, lighting: event.target.value }))} placeholder="Golden hour, soft key..." />
+                      </div>
+                      <div>
+                        <label className="production-label" htmlFor="prompt-mood">Mood</label>
+                        <input id="prompt-mood" className="production-input" maxLength={120} value={promptDraft.mood} onChange={(event) => setPromptDraft((current) => ({ ...current, mood: event.target.value }))} placeholder="Tegang, hangat..." />
+                      </div>
+                    </div>
+
+                    <label className="production-label" htmlFor="prompt-notes">Catatan internal</label>
+                    <textarea id="prompt-notes" className="production-textarea" rows={2} value={promptDraft.notes} onChange={(event) => setPromptDraft((current) => ({ ...current, notes: event.target.value }))} placeholder="Catatan untuk operator atau render berikutnya..." />
+
+                    <div className="production-save-row">
+                      <span>
+                        {promptDirty
+                          ? "Perubahan belum disimpan"
+                          : selectedPrompt
+                            ? `Tersimpan · ${selectedPrompt.status === "approved" ? "disetujui" : "draf"}`
+                            : "Prompt belum dibuat"}
+                      </span>
+                      <div className="prompt-actions">
+                        <button className="button-outline ai-draft-button" onClick={() => void generatePromptWithAi()} disabled={promptAiBusy || promptAllAiBusy || promptBusy}>
+                          {promptAiBusy ? <LoaderCircle size={13} className="spin-icon" /> : <Sparkles size={13} />}
+                          {promptAiBusy ? "Draf AI diproses..." : "Isi dengan AI"}
+                        </button>
+                        {selectedPrompt && (
+                          <>
+                            <button className="button-outline" onClick={() => void togglePromptApproved()} disabled={promptBusy}>
+                              {selectedPrompt.status === "approved" ? <RotateCcw size={13} /> : <ShieldCheck size={13} />}
+                              {selectedPrompt.status === "approved" ? "Batalkan" : "Setujui"}
+                            </button>
+                            <button className="button-outline" onClick={() => void toggleRevisions()} disabled={revisionsBusy}>
+                              {revisionsBusy ? <LoaderCircle size={13} className="spin-icon" /> : <History size={13} />}
+                              Riwayat
+                            </button>
+                          </>
+                        )}
+                        <button className="button-primary" onClick={() => void savePrompt()} disabled={promptBusy || !promptDraft.positive.trim() || (selectedPrompt !== null && !promptDirty)}>
+                          {promptBusy ? <LoaderCircle size={14} className="spin-icon" /> : <Save size={14} />}
+                          {promptBusy ? "Menyimpan..." : selectedPrompt ? "Simpan perubahan" : "Buat prompt"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {revisionsOpen && (
+                      <div className="prompt-revisions">
+                        <span className="section-kicker">RIWAYAT REVISI</span>
+                        {promptRevisions.length === 0 ? (
+                          <p className="prompt-revision-empty">Belum ada revisi tersimpan.</p>
+                        ) : (
+                          <ol className="prompt-revision-list">
+                            {promptRevisions.map((revision) => (
+                              <li key={revision.version}>
+                                <div className="prompt-revision-heading">
+                                  <strong>Versi {revision.version}</strong>
+                                  <small>{formatTimestamp(revision.created_at)}</small>
+                                </div>
+                                <p>{revision.snapshot.positive || "—"}</p>
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+          <div className="storyboard-footnote"><ArrowRight size={13} /> Prompt ini menjadi sumber untuk mesin workflow dan render Blender pada tahap berikutnya.</div>
         </section>
       )}
     </div>

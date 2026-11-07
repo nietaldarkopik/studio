@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Laravel backend lives alongside the frontend; never lint its vendor/cache.
+    "api/**",
   ]),
 ]);
 
