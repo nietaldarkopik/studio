@@ -33,7 +33,7 @@ function resolveEndpoint(method: HttpMethod, segments: string[]) {
     return { path: `/api/workspaces/${scriptGenerationMatch[1]}/projects/${scriptGenerationMatch[2]}/script/generate` };
   }
 
-  const aiGenerationMatch = path.match(/^workspaces\/(\d+)\/projects\/(\d+)\/ai\/(prompt|prompt_all|research_search|research)$/);
+  const aiGenerationMatch = path.match(/^workspaces\/(\d+)\/projects\/(\d+)\/ai\/(prompt|prompt_all|research_search|research_auto|research_verify|research)$/);
   if (aiGenerationMatch && (method === "POST" || method === "GET")) {
     return { path: `/api/workspaces/${aiGenerationMatch[1]}/projects/${aiGenerationMatch[2]}/ai/${aiGenerationMatch[3]}` };
   }
@@ -113,6 +113,34 @@ function resolveEndpoint(method: HttpMethod, segments: string[]) {
     return { path: `/api/workspaces/${workflowMatch[1]}/projects/${workflowMatch[2]}/workflows/${workflowMatch[3]}` };
   }
 
+  const hubMatch = path.match(/^workspaces\/(\d+)\/hub\/(research|scenes|renders|audio|qc|publishing|media|agents|analytics)$/);
+  if (hubMatch && method === "GET") {
+    return { path: `/api/workspaces/${hubMatch[1]}/hub/${hubMatch[2]}` };
+  }
+
+  const runFileMatch = path.match(/^workspaces\/(\d+)\/production-runs\/(\d+)\/files\/(video|contact|audio|frame)(?:\/(\d+))?$/);
+  if (runFileMatch && method === "GET") {
+    return {
+      path: `/api/workspaces/${runFileMatch[1]}/production-runs/${runFileMatch[2]}/files/${runFileMatch[3]}${runFileMatch[4] ? `/${runFileMatch[4]}` : ""}`,
+      binary: true,
+    };
+  }
+
+  const productionRunsMatch = path.match(/^workspaces\/(\d+)\/production-runs$/);
+  if (productionRunsMatch && (method === "GET" || method === "POST")) {
+    return { path: `/api/workspaces/${productionRunsMatch[1]}/production-runs` };
+  }
+
+  const productionRunMatch = path.match(/^workspaces\/(\d+)\/production-runs\/(\d+)$/);
+  if (productionRunMatch && method === "GET") {
+    return { path: `/api/workspaces/${productionRunMatch[1]}/production-runs/${productionRunMatch[2]}` };
+  }
+
+  const productionRunActionMatch = path.match(/^workspaces\/(\d+)\/production-runs\/(\d+)\/(resume|approve-publish|cancel)$/);
+  if (productionRunActionMatch && method === "POST") {
+    return { path: `/api/workspaces/${productionRunActionMatch[1]}/production-runs/${productionRunActionMatch[2]}/${productionRunActionMatch[3]}` };
+  }
+
   const projectsMatch = path.match(/^workspaces\/(\d+)\/projects$/);
   if (projectsMatch && (method === "GET" || method === "POST")) {
     return { path: `/api/workspaces/${projectsMatch[1]}/projects` };
@@ -173,19 +201,23 @@ async function handle(request: NextRequest, context: RouteContext, method: HttpM
     if (declaredLength > maxRequestBodyBytes) {
       return jsonResponse({ message: "Request body is too large." }, 413);
     }
-    if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
-      return jsonResponse({ message: "JSON request body required." }, 415);
+    const rawBody = await request.text();
+    if (new TextEncoder().encode(rawBody).byteLength > maxRequestBodyBytes) {
+      return jsonResponse({ message: "Request body is too large." }, 413);
     }
 
-    body = await request.text();
-    if (new TextEncoder().encode(body).byteLength > maxRequestBodyBytes) {
-      return jsonResponse({ message: "Request body is too large." }, 413);
+    // Aksi tanpa data (mis. resume, cancel, generate semua) boleh tanpa body.
+    if (rawBody.trim() !== "") {
+      if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+        return jsonResponse({ message: "JSON request body required." }, 415);
+      }
+      body = rawBody;
     }
   }
 
   let upstream: Response;
   const isScriptGeneration = method === "POST" && endpoint.path.endsWith("/script/generate");
-  const timeoutMs = 10_000;
+  const timeoutMs = "binary" in endpoint && endpoint.binary ? 120_000 : 10_000;
   try {
     upstream = await fetch(`${backendUrl}${endpoint.path}`, {
       method,
@@ -203,6 +235,17 @@ async function handle(request: NextRequest, context: RouteContext, method: HttpM
       return jsonResponse({ message: "Studio API request timed out." }, 504);
     }
     return jsonResponse({ message: "Studio API is unavailable." }, 503);
+  }
+
+  if ("binary" in endpoint && endpoint.binary) {
+    if (!upstream.ok || !upstream.body) return jsonResponse({ message: "File not found." }, upstream.status === 404 ? 404 : 502);
+    const allowed = ["video/mp4", "audio/mpeg", "audio/wav", "image/png"];
+    const type = upstream.headers.get("content-type") ?? "";
+    if (!allowed.includes(type)) return jsonResponse({ message: "Unsupported file." }, 502);
+    return new Response(upstream.body, {
+      status: 200,
+      headers: { "Content-Type": type, "Cache-Control": "private, max-age=60", "X-Content-Type-Options": "nosniff" },
+    });
   }
 
   let payload: Record<string, unknown>;

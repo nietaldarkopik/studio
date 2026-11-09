@@ -41,7 +41,7 @@ class GenerateAiDraft implements ShouldQueue
         ]);
 
         try {
-            $draft = $this->draftFor($nineRouter, $search, $generation->task, $generation->input ?? []);
+            $draft = $this->draftFor($nineRouter, $search, $generation, $generation->task, $generation->input ?? []);
         } catch (Throwable $exception) {
             $generation->update([
                 'status' => 'failed',
@@ -103,13 +103,15 @@ class GenerateAiDraft implements ShouldQueue
      * @param  array<string, mixed>  $input
      * @return array<string, mixed>
      */
-    private function draftFor(NineRouterClient $nineRouter, SearchClient $search, string $task, array $input): array
+    private function draftFor(NineRouterClient $nineRouter, SearchClient $search, AiGeneration $generation, string $task, array $input): array
     {
         return match ($task) {
             'prompt' => $nineRouter->generatePromptDraft($input),
             'prompt_all' => $nineRouter->generatePromptBatchDrafts($input),
             'research' => $nineRouter->fillResearchSource($this->withPageText($search, $input)),
             'research_search' => $this->searchSources($nineRouter, $search, $input),
+            'research_auto' => $this->autoResearch($generation),
+            'research_verify' => app(\App\Services\Research\ResearchService::class)->verify($generation->project) + ['model' => config('services.nine_router.model')],
             default => throw new RuntimeException('Jenis draf AI tidak dikenal.', 422),
         };
     }
@@ -235,6 +237,23 @@ class GenerateAiDraft implements ShouldQueue
         });
 
         return $created;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function autoResearch(AiGeneration $generation): array
+    {
+        $service = app(\App\Services\Research\ResearchService::class);
+        $project = $generation->project;
+        $queries = $service->queriesFor($project);
+        $created = $service->collect($project, $generation->requested_by, $queries);
+
+        if ($created === 0 && $project->researchSources()->doesntExist()) {
+            throw new RuntimeException('Riset otomatis tidak menemukan sumber untuk topik ini.', 502);
+        }
+
+        return ['created' => $created, 'queries' => $queries, 'domains' => $service->distinctDomains($project), 'model' => config('services.nine_router.model')];
     }
 
     private function safeMessage(Throwable $exception): string

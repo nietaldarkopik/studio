@@ -3,13 +3,16 @@
 use App\Http\Controllers\Api\AiGenerationController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ProductionController;
+use App\Http\Controllers\Api\ProductionRunController;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\PromptController;
 use App\Http\Controllers\Api\ResearchSourceController;
 use App\Http\Controllers\Api\ScriptGenerationController;
+use App\Http\Controllers\Api\StudioHubController;
 use App\Http\Controllers\Api\WorkflowController;
 use App\Http\Controllers\Api\WorkspaceController;
 use App\Http\Controllers\Api\WorkspaceSettingsController;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:5,1');
@@ -47,9 +50,9 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::put('/workspaces/{workspaceId}/projects/{projectId}/script', [ProductionController::class, 'saveScript'])
         ->whereNumber('workspaceId')->whereNumber('projectId');
     Route::post('/workspaces/{workspaceId}/projects/{projectId}/script/generate', [ScriptGenerationController::class, 'generate'])
-        ->whereNumber('workspaceId')->whereNumber('projectId')->middleware('throttle:5,1');
+        ->whereNumber('workspaceId')->whereNumber('projectId')->middleware('throttle:script-generate');
     Route::get('/workspaces/{workspaceId}/projects/{projectId}/script/generate', [ScriptGenerationController::class, 'show'])
-        ->whereNumber('workspaceId')->whereNumber('projectId')->middleware('throttle:240,1');
+        ->whereNumber('workspaceId')->whereNumber('projectId')->middleware('throttle:script-poll');
     Route::post('/workspaces/{workspaceId}/projects/{projectId}/scenes', [ProductionController::class, 'createScene'])
         ->whereNumber('workspaceId')->whereNumber('projectId');
     Route::put('/workspaces/{workspaceId}/projects/{projectId}/scenes/order', [ProductionController::class, 'reorderScenes'])
@@ -70,10 +73,10 @@ Route::middleware('auth:sanctum')->group(function (): void {
         ->whereNumber('workspaceId')->whereNumber('projectId')->whereNumber('sourceId');
     Route::post('/workspaces/{workspaceId}/projects/{projectId}/ai/{task}', [AiGenerationController::class, 'generate'])
         ->whereNumber('workspaceId')->whereNumber('projectId')
-        ->whereIn('task', ['prompt', 'prompt_all', 'research', 'research_search'])->middleware('throttle:10,1');
+        ->whereIn('task', ['prompt', 'prompt_all', 'research', 'research_search', 'research_auto', 'research_verify'])->middleware('throttle:ai-generate');
     Route::get('/workspaces/{workspaceId}/projects/{projectId}/ai/{task}', [AiGenerationController::class, 'show'])
         ->whereNumber('workspaceId')->whereNumber('projectId')
-        ->whereIn('task', ['prompt', 'prompt_all', 'research', 'research_search'])->middleware('throttle:240,1');
+        ->whereIn('task', ['prompt', 'prompt_all', 'research', 'research_search', 'research_auto', 'research_verify'])->middleware('throttle:ai-poll');
     Route::get('/workspaces/{workspaceId}/projects/{projectId}/prompts', [PromptController::class, 'index'])
         ->whereNumber('workspaceId')->whereNumber('projectId');
     Route::post('/workspaces/{workspaceId}/projects/{projectId}/prompts', [PromptController::class, 'store'])
@@ -102,6 +105,26 @@ Route::middleware('auth:sanctum')->group(function (): void {
         ->whereNumber('workspaceId')->whereNumber('projectId')->whereNumber('workflowId')->whereNumber('stepId');
     Route::post('/workspaces/{workspaceId}/projects/{projectId}/workflows/{workflowId}/steps/{stepId}/transition', [WorkflowController::class, 'transition'])
         ->whereNumber('workspaceId')->whereNumber('projectId')->whereNumber('workflowId')->whereNumber('stepId');
+    Route::get('/workspaces/{workspaceId}/production-runs', [ProductionRunController::class, 'index'])
+        ->whereNumber('workspaceId');
+    Route::post('/workspaces/{workspaceId}/production-runs', [ProductionRunController::class, 'store'])
+        ->whereNumber('workspaceId')->middleware('throttle:run-start');
+    Route::get('/workspaces/{workspaceId}/production-runs/{runId}', [ProductionRunController::class, 'show'])
+        ->whereNumber('workspaceId')->whereNumber('runId')->middleware('throttle:run-poll');
+    Route::post('/workspaces/{workspaceId}/production-runs/{runId}/resume', [ProductionRunController::class, 'resume'])
+        ->whereNumber('workspaceId')->whereNumber('runId');
+    Route::post('/workspaces/{workspaceId}/production-runs/{runId}/approve-publish', [ProductionRunController::class, 'approvePublish'])
+        ->whereNumber('workspaceId')->whereNumber('runId');
+    Route::post('/workspaces/{workspaceId}/production-runs/{runId}/cancel', [ProductionRunController::class, 'cancel'])
+        ->whereNumber('workspaceId')->whereNumber('runId');
+    Route::get('/workspaces/{workspaceId}/hub/{section}', function (Request $request, int $workspaceId, string $section) {
+        return app(StudioHubController::class)->{$section}($request, $workspaceId);
+    })->whereNumber('workspaceId')
+        ->whereIn('section', ['research', 'scenes', 'renders', 'audio', 'qc', 'publishing', 'media', 'agents', 'analytics'])
+        ->middleware('throttle:hub');
+    Route::get('/workspaces/{workspaceId}/production-runs/{runId}/files/{kind}/{n?}', [StudioHubController::class, 'file'])
+        ->whereNumber('workspaceId')->whereNumber('runId')->whereIn('kind', ['video', 'contact', 'audio', 'frame'])->whereNumber('n')
+        ->middleware('throttle:hub');
     Route::delete('/projects/{projectId}', [ProjectController::class, 'destroy'])
         ->whereNumber('projectId');
 });

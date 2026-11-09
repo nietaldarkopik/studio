@@ -15,11 +15,13 @@ class NineRouterClient
     /**
      * @return array{narration: string, scenes: array<int, array<string, mixed>>, model: string, word_count: int}
      */
-    public function generateScriptDraft(string $topic, string $format): array
+    public function generateScriptDraft(string $topic, string $format, ?string $facts = null): array
     {
         $content = $this->complete(
             $this->systemPrompt($format),
-            "Topik proyek: {$topic}\n\nTulis satu draf narasi sesuai format yang dipilih.",
+            "Topik proyek: {$topic}\n\n".($facts !== null && trim($facts) !== ''
+                ? "FAKTA DARI SUMBER RISET (gunakan HANYA fakta ini untuk klaim spesifik):\n{$facts}\n\n"
+                : '').'Tulis satu draf narasi sesuai format yang dipilih.',
             '9Router mengembalikan respons tanpa narasi yang valid.',
         );
 
@@ -234,6 +236,166 @@ class NineRouterClient
         return ['candidates' => $candidates, 'model' => $this->model()];
     }
 
+    /**
+     * Usulkan satu ide video: tema, judul, deskripsi, hashtag, dan kata kunci riset.
+     *
+     * @param  array<string, mixed>  $context  {format, hint, avoid[]}
+     * @return array{theme: string, topic: string, title: string, description: string, hashtags: array<int, string>, queries: array<int, string>, model: string}
+     */
+    public function generateIdea(array $context): array
+    {
+        $format = (string) ($context['format'] ?? 'mystery_investigation');
+        $avoid = array_slice(array_values(array_filter((array) ($context['avoid'] ?? []), 'is_string')), 0, 80);
+        $hint = trim((string) ($context['hint'] ?? ''));
+
+        $system = implode("\n", [
+            'Anda produser konten kanal YouTube Shorts "Ternyata Begini" (Bahasa Indonesia, animasi 3D edukatif & storytelling).',
+            'Tugas: usulkan SATU ide video yang unik, spesifik, dan mengejutkan — bukan topik generik/buku teks.',
+            'Format naskah: '.$this->formatLabel($format).'.',
+            'Hanya usulkan fakta yang nyata dan dapat diverifikasi dengan minimal dua sumber independen; jangan mengarang.',
+            'Judul: Bahasa Indonesia, memancing rasa penasaran, maksimal 70 karakter, tanpa clickbait menyesatkan, tanpa tanda kutip pembuka/penutup.',
+            'Deskripsi: 2–3 kalimat ringkas. hashtags: 3–6 kata tanpa tanda #. queries: 3 kata kunci pencarian web (boleh Inggris) untuk memverifikasi fakta inti.',
+            'theme: label tema 2–4 kata. topic: satu kalimat yang menjelaskan klaim faktual inti video.',
+            'Balas hanya dengan satu objek JSON valid tanpa markdown:',
+            '{"theme":"...","topic":"...","title":"...","description":"...","hashtags":["..."],"queries":["...","...","..."]}',
+        ]);
+
+        $user = ($hint !== '' ? "Arahan tema dari pengguna: {$hint}\n\n" : '')
+            .($avoid !== [] ? "HINDARI topik yang sudah dipakai atau mirip dengan:\n- ".implode("\n- ", $avoid)."\n\n" : '')
+            .'Berikan satu ide video baru.';
+
+        $decoded = $this->decodeJsonObject($this->complete($system, $user, '9Router mengembalikan respons ide yang tidak valid.')) ?? [];
+
+        $title = $this->optionalText($decoded['title'] ?? null);
+        $topic = $this->optionalText($decoded['topic'] ?? null);
+        if ($title === null || $topic === null) {
+            throw new RuntimeException('9Router mengembalikan respons ide yang tidak valid.', 502);
+        }
+
+        $hashtags = [];
+        foreach ((array) ($decoded['hashtags'] ?? []) as $tag) {
+            $tag = preg_replace('/[^\p{L}\p{N}_]/u', '', (string) $tag) ?? '';
+            if ($tag !== '' && ! in_array($tag, $hashtags, true)) {
+                $hashtags[] = mb_substr($tag, 0, 30);
+            }
+        }
+
+        $queries = [];
+        foreach ((array) ($decoded['queries'] ?? []) as $query) {
+            if (is_string($query) && trim($query) !== '') {
+                $queries[] = mb_substr(trim($query), 0, 200);
+            }
+        }
+
+        return [
+            'theme' => $this->clamp($this->optionalText($decoded['theme'] ?? null) ?? 'Fakta unik', 60),
+            'topic' => $this->clamp($topic, 500),
+            'title' => $this->clamp(trim($title, " \t\n\r\0\x0B\"'"), 100),
+            'description' => $this->clamp($this->optionalText($decoded['description'] ?? null) ?? $topic, 800),
+            'hashtags' => array_slice($hashtags, 0, 8),
+            'queries' => array_slice($queries !== [] ? $queries : [$topic], 0, 4),
+            'model' => $this->model(),
+        ];
+    }
+
+    /**
+     * Periksa klaim faktual naskah terhadap temuan sumber riset.
+     *
+     * @param  array<int, array{title: string, findings: string}>  $sources
+     * @return array{supported: bool, issues: array<int, string>, model: string}
+     */
+    public function factCheckScript(string $narration, array $sources): array
+    {
+        $system = implode("\n", [
+            'Anda fact-checker. Periksa setiap klaim faktual dalam naskah HANYA terhadap temuan sumber yang diberikan.',
+            'Klaim yang tidak didukung (atau bertentangan dengan) sumber masuk ke daftar issues. Opini/retorika tanpa klaim faktual boleh diabaikan.',
+            'supported = true hanya jika semua klaim faktual penting didukung oleh sedikitnya satu sumber.',
+            'Balas hanya JSON valid: {"supported":true,"issues":["klaim bermasalah + alasan singkat"]}',
+        ]);
+
+        $lines = [];
+        foreach ($sources as $i => $source) {
+            $lines[] = '['.($i + 1).'] '.$source['title']."\n".mb_substr($source['findings'], 0, 1800);
+        }
+
+        $decoded = $this->decodeJsonObject($this->complete(
+            $system,
+            "SUMBER:\n".implode("\n\n", $lines)."\n\nNASKAH:\n{$narration}",
+            '9Router mengembalikan respons fact-check yang tidak valid.',
+        )) ?? [];
+
+        if (! array_key_exists('supported', $decoded)) {
+            throw new RuntimeException('9Router mengembalikan respons fact-check yang tidak valid.', 502);
+        }
+
+        $issues = [];
+        foreach ((array) ($decoded['issues'] ?? []) as $issue) {
+            if (is_string($issue) && trim($issue) !== '') {
+                $issues[] = mb_substr(trim($issue), 0, 300);
+            }
+        }
+
+        return [
+            'supported' => filter_var($decoded['supported'], FILTER_VALIDATE_BOOL) && $issues === [],
+            'issues' => array_slice($issues, 0, 8),
+            'model' => $this->model(),
+        ];
+    }
+
+    /**
+     * Rancang spesifikasi render 3D (palet, karakter, kamera) untuk tiap adegan.
+     *
+     * @param  array<int, array{scene_id: int, title: string, narration: ?string, visual: ?string}>  $scenes
+     * @return array<int, array<string, mixed>>  keyed by scene_id
+     */
+    public function generateRenderSpecs(string $title, string $format, array $scenes, bool $allowModels = false): array
+    {
+        $types = ['person', 'school', 'house', 'temple', 'tree', 'mountain', 'sun', 'moon', 'cloud', 'book', 'clock', 'laptop', 'phone', 'chart', 'arrow', 'coin', 'car', 'flag', 'magnifier', 'lightbulb', 'question', 'brain', 'water', 'fire', 'crowd', 'earth', 'planet', 'rocket', 'volcano', 'ship', 'plane', 'bridge'];
+
+        $system = implode("\n", [
+            'Anda sutradara animasi 3D penjelasan (explainer) untuk video pendek 9:16. Tugas: susun adegan 3D yang MENGILUSTRASIKAN isi narasi secara harfiah agar penonton paham tanpa membaca.',
+            'Untuk SETIAP adegan, tempatkan 3–7 objek dari pustaka berikut (hanya tipe ini): '.implode(', ', $types).'.',
+            'Cocokkan objek dengan hal yang DISEBUT narasi: tempat (school/house/temple/mountain/water), pelaku (person, crowd untuk banyak orang), benda/konsep (book, clock, laptop, phone, chart, coin, car, flag, lightbulb, brain, fire, question, magnifier, arrow), suasana (sun/moon/cloud/tree).',
+            $allowModels ? 'Untuk SATU subjek utama per adegan yang butuh bentuk realistis dan TIDAK ada di pustaka (mis. candi Borobudur, dinosaurus, mikroskop), gunakan {"type":"model","query":"kata kunci pencarian model 3D dalam bahasa Inggris","fallback":"salah satu tipe pustaka sebagai cadangan","size":3,"x":..,"y":..}. query harus menyebut model nyata yang spesifik dalam bahasa Inggris (mis. "Borobudur temple"), satu objek per query. size = ukuran sisi terpanjang di adegan (1.5 benda kecil, 3 sedang, 6 bangunan/besar). Maksimal 2 objek model per adegan; sisanya pakai pustaka.' : 'Hanya gunakan tipe pustaka.',
+            'Format objek: {"type":"...","color":"#rrggbb","x":-6..6,"y":-2..6,"scale":0.6..2,"label":"nama pendek opsional","anim":"none|bob|spin|grow|shake|wave","speaks":true/false}. x kiri-kanan, y kedalaman (lebih besar = lebih jauh). Latar besar (mountain/school) di y 2–6, tokoh di y -2..0. Jangan menumpuk objek di posisi yang sama.',
+            'Gunakan anim yang bermakna: shake untuk tertawa/panik/getar, grow untuk sesuatu yang bertambah/menyebar, wave untuk menyapa, spin untuk berputar, bob untuk melayang. Tokoh yang berbicara pada adegan itu diberi speaks=true.',
+            'Setiap adegan: bg [warnaLangitAtas, warnaLangitBawah] sesuai suasana (siang cerah terang, malam gelap), accent (hex), title = kata kunci layar maks 28 karakter yang merangkum inti adegan, camera salah satu push_in|pull_out|pan.',
+            $format === 'flag_banter' ? 'Format debat bendera: gunakan objek flag dengan "stripes":["#hex","#hex"] (2–3 warna) dan "stripe_dir":"h" atau "v" sesuai bendera negara yang dibahas, berdampingan dengan person.' : 'Pertahankan konsistensi tokoh utama antar adegan (warna baju sama).',
+            'Balas hanya JSON valid: {"scenes":[{"scene_id":1,"bg":["#7ec8ff","#cfeeff"],"accent":"#ff7a45","title":"...","camera":"push_in","objects":[{"type":"school","color":"#f4d58d","x":0,"y":2,"scale":1.5,"anim":"none"}]}]}',
+        ]);
+
+        $payload = array_map(fn (array $s) => [
+            'scene_id' => $s['scene_id'],
+            'judul' => $s['title'],
+            'narasi' => mb_substr((string) ($s['narration'] ?? ''), 0, 400),
+            'visual' => mb_substr((string) ($s['visual'] ?? ''), 0, 300),
+        ], $scenes);
+
+        $decoded = $this->decodeJsonObject($this->complete(
+            $system,
+            "Judul video: {$title}\nAdegan:\n".json_encode($payload, JSON_UNESCAPED_UNICODE),
+            '9Router mengembalikan respons spesifikasi render yang tidak valid.',
+        )) ?? [];
+
+        $result = [];
+        foreach ((array) ($decoded['scenes'] ?? []) as $entry) {
+            if (is_array($entry) && isset($entry['scene_id'])) {
+                $result[(int) $entry['scene_id']] = $entry;
+            }
+        }
+
+        return $result;
+    }
+
+    private function formatLabel(string $format): string
+    {
+        return match ($format) {
+            'chain_build' => 'Rantai Bangun ("Kamu bangun X...", solusi bertahap)',
+            'flag_banter' => 'Debat Bendera (2–3 bendera negara 3D saling membandingkan fakta)',
+            default => 'Misteri & Investigasi (anomali sains/psikologi/sejarah, deep-dive tajam)',
+        };
+    }
+
     private function complete(string $systemPrompt, string $userPrompt, string $emptyMessage): string
     {
         $baseUrl = rtrim((string) config('services.nine_router.base_url'), '/');
@@ -246,24 +408,42 @@ class NineRouterClient
 
         $timeout = max(1, (int) config('services.nine_router.timeout', 600));
 
-        try {
-            $response = Http::connectTimeout(5)
-                ->timeout($timeout)
-                ->withOptions(['allow_redirects' => false])
-                ->withToken($apiKey)
-                ->acceptJson()
-                ->post("{$baseUrl}/chat/completions", [
-                    'model' => $model,
-                    'temperature' => 0.7,
-                    'stream' => false,
-                    'messages' => [
-                        ['role' => 'system', 'content' => $systemPrompt],
-                        ['role' => 'user', 'content' => $userPrompt],
-                    ],
-                ]);
-        } catch (ConnectionException) {
-            throw new RuntimeException('9Router tidak merespons dalam batas waktu.', 503);
+        $retries = max(0, (int) config('services.nine_router.rate_limit_retries', 3));
+        $startedAt = microtime(true);
+        $waited = 0;
+
+        for ($attempt = 0; ; $attempt++) {
+            try {
+                $response = Http::connectTimeout(5)
+                    ->timeout($timeout)
+                    ->withOptions(['allow_redirects' => false])
+                    ->withToken($apiKey)
+                    ->acceptJson()
+                    ->post("{$baseUrl}/chat/completions", [
+                        'model' => $model,
+                        'temperature' => 0.7,
+                        'stream' => false,
+                        'messages' => [
+                            ['role' => 'system', 'content' => $systemPrompt],
+                            ['role' => 'user', 'content' => $userPrompt],
+                        ],
+                    ]);
+            } catch (ConnectionException) {
+                throw new RuntimeException('9Router tidak merespons dalam batas waktu.', 503);
+            }
+
+            // Kuota hulu (mis. free tier per menit) habis sementara: tunggu sesuai petunjuk lalu ulangi.
+            $wait = $attempt < $retries ? $this->rateLimitWait($response) : null;
+            if ($wait === null) {
+                break;
+            }
+
+            \Illuminate\Support\Facades\Log::warning('9Router rate-limited/503; menunggu '.$wait.'s lalu mengulang (percobaan '.($attempt + 1).').');
+            $waited += $wait;
+            sleep($wait);
         }
+
+        \Illuminate\Support\Facades\Log::info('9Router selesai', ['status' => $response->status(), 'detik' => round(microtime(true) - $startedAt, 1), 'menunggu_retry' => $waited]);
 
         if (! $response->successful()) {
             throw new RuntimeException(
@@ -278,6 +458,32 @@ class NineRouterClient
         }
 
         return trim($content);
+    }
+
+    /**
+     * Detik yang harus ditunggu bila respons adalah batas laju/kuota sementara; null bila bukan.
+     */
+    private function rateLimitWait(Response $response): ?int
+    {
+        if ($response->successful()) {
+            return null;
+        }
+
+        $body = $response->body();
+        if ($response->status() === 503 && stripos($body, 'models failed') !== false) {
+            return 15; // semua model hulu gagal sesaat; coba lagi
+        }
+
+        if (! preg_match('/429|RESOURCE_EXHAUSTED|rate.?limit|quota/i', $body)) {
+            return null;
+        }
+
+        $seconds = preg_match('/retry in ([0-9.]+)s/i', $body, $m) ? (int) ceil((float) $m[1]) : 30;
+        if ($seconds > 120) {
+            return null; // kuota harian/panjang: jangan menunggu
+        }
+
+        return max(2, $seconds + 2);
     }
 
     private function model(): string
@@ -384,6 +590,11 @@ class NineRouterClient
         return $message === ''
             ? "9Router merespons dengan HTTP {$response->status()} tanpa detail pesan."
             : "9Router HTTP {$response->status()}: {$message}";
+    }
+
+    public function resolvedApiKey(): ?string
+    {
+        return $this->apiKey();
     }
 
     private function apiKey(): ?string

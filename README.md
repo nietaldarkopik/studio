@@ -20,6 +20,34 @@ Open `http://localhost:3000`. Set `STUDIO_API_URL`, `CLIPWIZE_BASE`, and `BLENDE
 
 Create the initial Studio account from `../api` using `php artisan studio:user-create`. Password input is hidden in the terminal; public signup is disabled. See [the API setup guide](../api/README.md) for database and migration setup.
 
+## Auto production (ide → upload YouTube)
+
+Menu **Auto Production** (atau `php artisan studio:autopilot`) menjalankan seluruh alur untuk satu video:
+tema/judul dari AI (menghindari topik yang sudah dipakai) → riset ≥2 situs independen → naskah 95–160 kata + fact-check terhadap sumber → storyboard → prompt visual → narasi TTS ClipWize → render Blender 5.2 (headless, Eevee) → ffmpeg (caption, watermark, BGM −22 dB) → QC otomatis → upload YouTube Shorts lewat ClipWize.
+
+Menjalankan:
+
+```powershell
+# terminal 1 — API
+Set-Location api; php artisan serve --host=127.0.0.1 --port=8001
+# terminal 2 — worker (render bisa berjam-jam, jangan beri timeout)
+Set-Location api; php artisan queue:work --timeout=0
+# terminal 3 (opsional) — produksi harian terjadwal bila PRODUCTION_DAILY_AT diisi
+Set-Location api; php artisan schedule:work
+```
+
+Prasyarat satu kali: token ClipWize dibuat oleh Anda (`python clipwize.py login --email ...`, token tidak pernah dibaca/ditulis oleh aplikasi selain dibaca server saat memanggil API), dan 9Router hidup (riset memakai `/v1/search` 9Router; `TAVILY_API_KEY` opsional) di `localhost:20128`. Lihat `api/.env.example`.
+
+Keamanan publikasi: upload bersifat publik dan tidak dapat dibatalkan, sehingga default-nya berhenti dan menunggu tombol **Setujui & upload**. Set `PRODUCTION_AUTO_PUBLISH=true` (atau centang opsi saat memulai / `--publish`) agar video langsung diunggah **hanya bila** semua QC otomatis lolos. Upload tidak pernah diulang otomatis; hasil yang tidak jelas ditandai *needs_review*. Ada batas upload per hari dan pemeriksaan judul duplikat. QC otomatis memeriksa resolusi, durasi, audio, kecerahan, panjang naskah, sumber, dan prompt, serta membuat contact sheet untuk tinjauan manual (`storage/app/production/run_N/contact.png`).
+
+### Visual adegan
+
+Renderer Blender menyusun adegan dari **pustaka objek 3D prosedural** (orang, kerumunan, sekolah, rumah, candi, pohon, gunung, Bumi, planet, roket, gunung berapi, kapal, pesawat, jembatan, grafik, jam, buku, dll.). AI memilih dan menata objek sesuai isi narasi, lengkap dengan animasi dan kata kunci di layar. Prompt visual dipakai AI untuk memilih objek; hasilnya bukan gambar fotorealistik.
+
+Untuk subjek yang tidak ada di pustaka (mis. candi tertentu), isi `SKETCHFAB_API_TOKEN`: pipeline akan mencari model glTF berlisensi CC0/CC-BY di Sketchfab, mengunduhnya (ZIP diperiksa), dan memakainya di render. Atribusi CC-BY otomatis ditulis di deskripsi YouTube. Bila model tidak ditemukan atau token kosong, objek prosedural cadangan dipakai.
+
+**MCP Blender (eksplorasi interaktif)**: `.mcp.json` di folder proyek mendaftarkan `mcp-for-blender` (telemetri mati, `BLENDER_MCP_SAFE_MODE=1`, hanya localhost). Addon dipasang ke Blender 5.2 (cadangan `blender_mcp.py.bak`). Cara pakai: buka Blender, tekan N > tab *MCP for Blender* > *Start MCP Server*; isi key Sketchfab di panel atau env `BLENDERMCP_SKETCHFAB_API_KEY`; restart sesi Claude Code dan setujui server `blender`. MCP ini untuk eksperimen di Blender GUI, bukan dipakai pipeline otomatis (yang berjalan headless dan memanggil API Sketchfab langsung).
+
 ## Current scope
 
 - Dark creative workspace shell, navigation, responsive layout, and dashboard.

@@ -6,6 +6,7 @@ import {
   ArrowRight,
   ArrowUp,
   Check,
+  Clapperboard,
   Clock3,
   FileText,
   History,
@@ -147,7 +148,7 @@ type PromptRevisionRecord = {
 
 type AiGenerationState = {
   id: number;
-  task: "prompt" | "prompt_all" | "research" | "research_search";
+  task: "prompt" | "prompt_all" | "research" | "research_search" | "research_auto" | "research_verify";
   status: "queued" | "running" | "completed" | "failed";
   model: string | null;
   input: Record<string, unknown>;
@@ -295,13 +296,16 @@ export default function ProductionWorkspace({
   initialTab = "script",
   onBack,
   onToast,
+  onBuildVideo,
 }: {
   project: WorkspaceProject;
   workspaceId: number;
   initialTab?: "script" | "storyboard" | "research" | "prompt";
   onBack: () => void;
   onToast: (message: string) => void;
+  onBuildVideo?: () => void;
 }) {
+  const [buildBusy, setBuildBusy] = useState(false);
   const [activeTab, setActiveTab] = useState<"script" | "storyboard" | "research" | "prompt">(initialTab);
   const [script, setScript] = useState<ScriptDraft>(emptyScript);
   const [savedScript, setSavedScript] = useState<ScriptDraft>(emptyScript);
@@ -329,6 +333,7 @@ export default function ProductionWorkspace({
   const [promptAllAiBusy, setPromptAllAiBusy] = useState(false);
   const [researchAiBusy, setResearchAiBusy] = useState(false);
   const [researchSearchBusy, setResearchSearchBusy] = useState(false);
+  const [researchBulkBusy, setResearchBulkBusy] = useState<"research_auto" | "research_verify" | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [sourceCandidates, setSourceCandidates] = useState<SourceCandidate[]>([]);
   const [inferredFields, setInferredFields] = useState<string[]>([]);
@@ -512,7 +517,7 @@ export default function ProductionWorkspace({
   }, [baseUrl]);
 
   useEffect(() => {
-    if (!promptAiBusy && !promptAllAiBusy && !researchAiBusy && !researchSearchBusy) return;
+    if (!promptAiBusy && !promptAllAiBusy && !researchAiBusy && !researchSearchBusy && !researchBulkBusy) return;
     let active = true;
 
     async function syncPrompts() {
@@ -533,6 +538,7 @@ export default function ProductionWorkspace({
       if (promptAllAiBusy) tasks.push("prompt_all");
       if (researchAiBusy) tasks.push("research");
       if (researchSearchBusy) tasks.push("research_search");
+      if (researchBulkBusy) tasks.push(researchBulkBusy);
 
       for (const task of tasks) {
         try {
@@ -560,6 +566,13 @@ export default function ProductionWorkspace({
               setPromptAllAiBusy(false);
               await syncPrompts();
               onToast(`${created} prompt draf dibuat untuk adegan yang belum terisi. Periksa dan setujui sebelum produksi.`);
+            } else if (task === "research_auto" || task === "research_verify") {
+              const refreshed = await fetch(`${baseUrl}/research-sources`, { cache: "no-store" });
+              if (refreshed.ok) setResearch(((await refreshed.json()).research as ResearchSummary) ?? emptyResearch);
+              setResearchBulkBusy(null);
+              onToast(task === "research_auto"
+                ? `Riset otomatis selesai: ${generation.result.created ?? 0} sumber ditambahkan (belum terverifikasi).`
+                : `Verifikasi AI selesai: ${generation.result.verified ?? 0} sumber didukung, ${generation.result.rejected ?? 0} ditolak.`);
             } else if (task === "research_search") {
               const candidates = parseSourceCandidates(generation.result.candidates);
               setSourceCandidates(candidates);
@@ -586,6 +599,8 @@ export default function ProductionWorkspace({
               setPromptAllAiBusy(false);
             } else if (task === "research_search") {
               setResearchSearchBusy(false);
+            } else if (task === "research_auto" || task === "research_verify") {
+              setResearchBulkBusy(null);
             } else {
               setResearchAiBusy(false);
             }
@@ -600,7 +615,7 @@ export default function ProductionWorkspace({
       active = false;
       window.clearInterval(timer);
     };
-  }, [promptAiBusy, promptAllAiBusy, researchAiBusy, researchSearchBusy, baseUrl, onToast, promptSceneId]);
+  }, [promptAiBusy, promptAllAiBusy, researchAiBusy, researchSearchBusy, researchBulkBusy, baseUrl, onToast, promptSceneId]);
 
   async function saveScript() {
     setSaving(true);
@@ -722,6 +737,19 @@ export default function ProductionWorkspace({
       onToast("Draf riset AI diproses di latar belakang. Temuan kunci akan terisi otomatis saat selesai.");
     } catch (aiError) {
       setError(aiError instanceof Error ? aiError.message : "Draf temuan AI gagal dibuat.");
+    }
+  }
+
+  async function startBulkResearch(task: "research_auto" | "research_verify") {
+    setError("");
+    try {
+      const response = await fetch(`${baseUrl}/ai/${task}`, { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Proses AI gagal dijalankan.");
+      setResearchBulkBusy(task);
+      onToast(task === "research_auto" ? "AI sedang mencari dan menyimpan sumber riset..." : "AI sedang memverifikasi sumber terhadap topik dan naskah...");
+    } catch (bulkError) {
+      setError(bulkError instanceof Error ? bulkError.message : "Proses AI gagal dijalankan.");
     }
   }
 
@@ -1074,6 +1102,32 @@ export default function ProductionWorkspace({
     }
   }
 
+  async function buildVideo() {
+    if (!scenes.some((scene) => (scene.narration ?? "").trim())) {
+      setError("Isi storyboard dengan narasi per adegan terlebih dahulu.");
+      return;
+    }
+    if (!window.confirm("Bangun video dari naskah, storyboard, dan prompt proyek ini? Narasi TTS dan render Blender akan dijalankan; upload ke YouTube tetap menunggu persetujuan Anda.")) return;
+
+    setBuildBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/studio/workspaces/${workspaceId}/production-runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: Number(project.id), auto_publish: false }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Pembuatan video gagal dimulai.");
+      onToast("Pembuatan video dimulai. Pantau di Auto Production.");
+      onBuildVideo?.();
+    } catch (buildError) {
+      setError(buildError instanceof Error ? buildError.message : "Pembuatan video gagal dimulai.");
+    } finally {
+      setBuildBusy(false);
+    }
+  }
+
   function selectScene(scene: SceneRecord) {
     if (sceneDirty && !window.confirm("Perubahan adegan belum disimpan. Ganti adegan dan buang perubahan?")) return;
     setSelectedSceneId(scene.id);
@@ -1094,7 +1148,10 @@ export default function ProductionWorkspace({
             <h1>{project.title}<span className="heading-period">.</span></h1>
             <p>{project.topic}</p>
           </div>
-          <span className="production-stage"><span />Draft · belum diverifikasi</span>
+          <button className="button-primary" onClick={() => void buildVideo()} disabled={buildBusy}>
+            {buildBusy ? <LoaderCircle size={14} className="spin-icon" /> : <Clapperboard size={14} />} Bangun video &amp; publish
+          </button>
+          <span className="production-stage"><span />{research.verified ? "Draft · riset terverifikasi" : "Draft · riset opsional"}</span>
         </div>
       </div>
 
@@ -1239,7 +1296,19 @@ export default function ProductionWorkspace({
             {research.verified ? <ShieldCheck size={14} /> : <Clock3 size={14} />}
             {research.verified
               ? "Riset terverifikasi: minimal 2 sumber dari 2 domain independen telah ditandai."
-              : `Belum terverifikasi — butuh minimal 2 sumber terverifikasi dari 2 domain berbeda (${research.verified_count}/2 sumber · ${research.independent_domain_count}/2 domain).`}
+              : `Opsional — riset dan verifikasi tidak wajib untuk produksi. Bila ingin diverifikasi: minimal 2 sumber dari 2 domain berbeda (${research.verified_count}/2 sumber · ${research.independent_domain_count}/2 domain). Gunakan tombol AI di bawah atau tandai manual.`}
+          </div>
+
+          <div className="research-ai-actions">
+            <button className="button-primary ai-draft-button" onClick={() => void startBulkResearch("research_auto")} disabled={researchBulkBusy !== null}>
+              {researchBulkBusy === "research_auto" ? <LoaderCircle size={13} className="spin-icon" /> : <Sparkles size={13} />}
+              {researchBulkBusy === "research_auto" ? "AI meriset..." : "Riset otomatis dengan AI"}
+            </button>
+            <button className="button-outline ai-draft-button" onClick={() => void startBulkResearch("research_verify")} disabled={researchBulkBusy !== null || research.source_count === 0}>
+              {researchBulkBusy === "research_verify" ? <LoaderCircle size={13} className="spin-icon" /> : <ShieldCheck size={13} />}
+              {researchBulkBusy === "research_verify" ? "AI memverifikasi..." : "Verifikasi dengan AI"}
+            </button>
+            <small>AI mencari sumber via 9Router lalu mencocokkan temuan tiap sumber dengan topik/naskah. Hasilnya tetap bisa Anda ubah manual.</small>
           </div>
 
           <div className="research-search">
@@ -1332,7 +1401,7 @@ export default function ProductionWorkspace({
           </div>
 
           {research.sources.length === 0 ? (
-            <div className="research-empty">Belum ada sumber. Tambahkan minimal dua sumber independen, lalu tandai terverifikasi setelah Anda memeriksa isinya.</div>
+            <div className="research-empty">Belum ada sumber. Klik “Riset otomatis dengan AI”, atau tambahkan manual. Riset bersifat opsional.</div>
           ) : (
             <ul className="research-list">
               {research.sources.map((source) => (

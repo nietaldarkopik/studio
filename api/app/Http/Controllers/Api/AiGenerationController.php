@@ -16,7 +16,7 @@ class AiGenerationController extends Controller
     /**
      * @var array<int, string>
      */
-    private const TASKS = ['prompt', 'prompt_all', 'research', 'research_search'];
+    private const TASKS = ['prompt', 'prompt_all', 'research', 'research_search', 'research_auto', 'research_verify'];
 
     public function generate(Request $request, int $workspaceId, int $projectId, string $task): JsonResponse
     {
@@ -125,6 +125,12 @@ class AiGenerationController extends Controller
                 'visual_description' => $scene->visual_description,
                 'camera_direction' => $scene->camera_direction,
             ];
+        }
+
+        if (in_array($task, ['research_auto', 'research_verify'], true)) {
+            abort_if($task === 'research_verify' && $project->researchSources()->doesntExist(), 409, 'Belum ada sumber untuk diverifikasi.');
+
+            return ['project_title' => $project->title, 'topic' => $project->topic];
         }
 
         if ($task === 'research_search') {

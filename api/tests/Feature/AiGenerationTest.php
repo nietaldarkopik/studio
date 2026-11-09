@@ -193,7 +193,7 @@ class AiGenerationTest extends TestCase
         [$owner, $workspace, $project] = $this->projectFor('owner');
         $base = "/api/workspaces/{$workspace->id}/projects/{$project->id}/ai/research_search";
 
-        $this->configureProvider();
+        config(['services.tavily.api_key' => null, 'services.tavily.keyless_fallback' => false, 'services.search.via_nine_router' => false]);
         config(['services.tavily.api_key' => null]);
         Http::fake(['http://localhost:20128/v1/chat/completions' => Http::response()]);
 

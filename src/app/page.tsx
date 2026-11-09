@@ -46,6 +46,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import ProductionWorkspace from "./production-workspace";
+import AutoProduction from "./auto-production";
+import StudioHub, { hubNav } from "./studio-hub";
 import WorkflowAutomation from "./workflow-automation";
 import WorkspaceSettings from "./workspace-settings";
 
@@ -85,6 +87,7 @@ const navItems: NavItem[] = [
   { label: "Voice & Audio", icon: Headphones, group: "Create" },
   { label: "Quality Control", icon: ShieldCheck, group: "Deliver" },
   { label: "Publishing", icon: Upload, group: "Deliver" },
+  { label: "Auto Production", icon: Sparkles, group: "Operate" },
   { label: "Workflow Automation", icon: Workflow, group: "Operate" },
   { label: "AI Agents", icon: Bot, group: "Operate" },
   { label: "Analytics", icon: Gauge, group: "Operate" },
@@ -393,7 +396,7 @@ export default function Home() {
     if (action === "research") {
       setToast("Riset belum dijalankan: provider riset dan autentikasi backend belum dikonfigurasi.");
     } else {
-      setToast("Produksi otonom belum dijalankan. Tidak ada job yang dikirim.");
+      navigate("Auto Production");
     }
   }
 
@@ -513,6 +516,7 @@ export default function Home() {
               initialTab={productionTab}
               onBack={() => navigate("Projects")}
               onToast={setToast}
+              onBuildVideo={() => navigate("Auto Production")}
             />
           ) : activeNav === "Settings" && workspaceId !== null ? (
             <WorkspaceSettings
@@ -520,6 +524,10 @@ export default function Home() {
               onToast={setToast}
               onWorkspaceRenamed={setWorkspaceName}
             />
+          ) : activeNav in hubNav && workspaceId !== null ? (
+            <StudioHub key={activeNav} workspaceId={workspaceId} label={activeNav} />
+          ) : activeNav === "Auto Production" && workspaceId !== null ? (
+            <AutoProduction workspaceId={workspaceId} onToast={setToast} />
           ) : activeNav === "Workflow Automation" && workspaceId !== null && activeProject ? (
             <WorkflowAutomation
               key={activeProject.id}
@@ -772,7 +780,7 @@ function Overview({
           <section className="side-card action-card">
             <div className="side-card-heading"><span className="section-kicker">QUICK ACTIONS</span><span className="quiet-tag">2 tersedia</span></div>
             <button className="quick-action" onClick={() => onQuickAction("research")}><span className="quick-icon research-icon"><Compass size={16} /></span><span><strong>Temukan topik</strong><small>Mulai sesi riset baru</small></span><ArrowRight size={15} /></button>
-            <button className="quick-action" onClick={() => onQuickAction("autonomous")}><span className="quick-icon auto-icon"><Sparkles size={16} /></span><span><strong>Produksi otonom</strong><small>Perlu workflow aktif</small></span><ArrowRight size={15} /></button>
+            <button className="quick-action" onClick={() => onQuickAction("autonomous")}><span className="quick-icon auto-icon"><Sparkles size={16} /></span><span><strong>Produksi otonom</strong><small>Ide hingga upload YouTube</small></span><ArrowRight size={15} /></button>
           </section>
 
           <section className="side-card connections-card">

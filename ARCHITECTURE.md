@@ -44,6 +44,16 @@ Not yet implemented:
 
 The workspace and project foundation now uses the Laravel API, but the production pipeline and most dashboard metrics are not connected. A locally detected Blender binary is only evidence that the studio host can report a version; it does not mean a workstation agent is online or that renders can run.
 
+## Auto production status
+
+Implemented (backend `App\Services\Production\ProductionPipeline`, job `RunProduction`, table `production_runs`):
+
+- Resumable ten-stage run: ideate → research → script (+fact-check) → storyboard → prompts → tts → render → finalize → qc → publish. Each stage state is persisted; a failed or `needs_review` run resumes at the stage that stopped.
+- Render uses allowlisted Blender execution on the host PC (`resources/blender/render_video.py`, driven only by a generated `spec.json`), not the future Windows Local Agent. Output is verified by frame count; ffmpeg assembles, captions, watermarks, mixes narration and BGM.
+- Publishing goes through ClipWize `clips/import` + `social-posts` with account-name check, daily cap, duplicate-title guard, and no automatic retry (no idempotency key). Default requires a human approval click; `PRODUCTION_AUTO_PUBLISH` enables fully automatic upload gated by automated QC.
+- Research searches via 9Router `/v1/search` (Tavily/Exa providers configured there) unless `TAVILY_API_KEY` is set; Wikipedia-only is the last-resort fallback.
+- Tested with mocked integrations (`ProductionPipelineTest`); live-verified individually: 9Router idea generation, ClipWize account listing and TTS, Blender 5.2 headless render, ffmpeg assembly. Live YouTube publish has not been exercised.
+
 ## Target service boundaries
 
 ```text

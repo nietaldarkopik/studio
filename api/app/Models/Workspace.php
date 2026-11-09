@@ -26,4 +26,9 @@ class Workspace extends Model
     {
         return $this->hasMany(Project::class);
     }
+
+    public function productionRuns(): HasMany
+    {
+        return $this->hasMany(ProductionRun::class);
+    }
 }
